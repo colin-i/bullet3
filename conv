@@ -1,0 +1,7 @@
+clang++ -std=c++03 \
+	-I src \
+	-Xclang -ast-dump=json \
+	-Xclang -ast-dump-filter=btBoxShape \
+	-fsyntax-only \
+	src/BulletCollision/CollisionShapes/btBoxShape.cpp \
+	> ../a.json

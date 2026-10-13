@@ -1,0 +1,53 @@
+# Build bullet.hdll from src plus the haxebullet HashLink bindings.
+# Bullet3* and BulletInverseDynamics modules are excluded.
+#
+# Usage:
+#   make -f Makefile -j$(nproc) [HB=...] [BULLET_SRC=...] [HL_SRC=...] [HL_LIB=...]
+#   make -f Makefile check
+#
+# On Ubuntu ARM64, install g++-x86-64-linux-gnu and the x86-64 cross libc.
+# HL_LIB must contain the x86-64 libhl.so.
+
+HB         ?= $(CURDIR)/../haxebullet
+BULLET_SRC ?= $(CURDIR)/src
+HL_SRC     ?= $(HOME)/haxelib/lime/8,3,2/templates/bin/hl/include
+HL_LIB     ?= $(HOME)/haxelib/lime/8,3,2/templates/bin/hl/Linux64
+
+ifeq ($(shell uname -m),aarch64)
+CXX := x86_64-linux-gnu-g++
+endif
+
+BUILD := ../build-bullet3-x86_64
+TARGET := ../bullet.hdll
+
+BULLET_SRCS := $(shell find $(BULLET_SRC) -type f -name '*.cpp' \
+	! -path '$(BULLET_SRC)/Bullet3*/*' \
+	! -path '$(BULLET_SRC)/BulletInverseDynamics/*' \
+	! -name 'btBulletCollisionAll.cpp' \
+	! -name 'btBulletDynamicsAll.cpp' \
+	! -name 'btLinearMathAll.cpp')
+WRAPPER_SRCS := $(HB)/hl/bullet.cpp $(HB)/hl/DebugDrawer.cpp
+OBJS := $(patsubst $(BULLET_SRC)/%.cpp,$(BUILD)/bullet3/%.o,$(BULLET_SRCS)) \
+	$(patsubst $(HB)/%.cpp,$(BUILD)/haxebullet/%.o,$(WRAPPER_SRCS))
+
+CXXFLAGS := -O2 -fPIC -std=c++11 -pthread -I$(HL_SRC) -I$(BULLET_SRC) -I$(HB)/hl -I$(HB)/bullet
+
+$(TARGET): $(OBJS)
+	$(CXX) -shared -o $@ $(OBJS) -L$(HL_LIB) -lhl -pthread
+
+$(BUILD)/bullet3/%.o: $(BULLET_SRC)/%.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+$(BUILD)/haxebullet/%.o: $(HB)/%.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+check: $(TARGET)
+	@file $(TARGET)
+	@file $(TARGET) | grep -q "x86-64" && echo "OK: x86-64 library" || (echo "NOT x86-64 - check CXX"; exit 1)
+
+clean:
+	rm -rf $(BUILD) $(TARGET)
+
+.PHONY: check clean
