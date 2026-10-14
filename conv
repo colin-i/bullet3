@@ -1,7 +1,63 @@
-clang++ -std=c++03 \
-	-I src \
-	-Xclang -ast-dump=json \
-	-Xclang -ast-dump-filter=btBoxShape \
-	-fsyntax-only \
-	src/BulletCollision/CollisionShapes/btBoxShape.cpp \
-	> ../a.json
+#!/usr/bin/env bash
+set -e
+
+output=../a.json
+if (($# == 0)); then
+	echo "usage: ./conv source.cpp|source.h [-f output.json] [filter ...]" >&2
+	exit 2
+fi
+source=$1
+shift
+if [[ ! -f "$source" && -f "src/$source" ]]; then
+	source="src/$source"
+fi
+if [[ ! -f "$source" ]]; then
+	echo "source file not found: $source" >&2
+	exit 2
+fi
+
+filters=()
+while (($#)); do
+	case "$1" in
+		-f)
+			if (($# < 2)); then
+				echo "usage: ./conv source.cpp|source.h [-f output.json] [filter ...]" >&2
+				exit 2
+			fi
+			output=$2
+			shift 2
+			;;
+		--)
+			shift
+			filters+=("$@")
+			break
+			;;
+		*)
+			filters+=("$1")
+			shift
+			;;
+	esac
+done
+
+: > "$output"
+if ((${#filters[@]} == 0)); then
+	clang++ -std=c++03 \
+		-I src \
+		-x c++ \
+		-Xclang -ast-dump=json \
+		-fsyntax-only \
+		"$source" \
+		> "$output"
+	exit
+fi
+
+for filter in "${filters[@]}"; do
+	clang++ -std=c++03 \
+		-I src \
+		-x c++ \
+		-Xclang -ast-dump=json \
+		-Xclang "-ast-dump-filter=$filter" \
+		-fsyntax-only \
+		"$source" \
+		>> "$output"
+done

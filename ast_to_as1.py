@@ -5,7 +5,7 @@ Clang's -ast-dump-filter output is a sequence of JSON objects, not a single
 JSON document. The generated AS1 class uses prototypes; method bodies are
 stubs because an AST declaration does not contain a JavaScript/AS1 binding.
 
-Usage: python3 ast_to_as1.py [../a.json] [-o ../bullet_as1/generated.as]
+Usage: python3 ast_to_as1.py [AST.json] [-o ../bullet_as1/orig/a/a.as]
 """
 import argparse
 import json
@@ -78,13 +78,18 @@ def expression(node):
         return "/* missing expression */"
     kind = node.get("kind")
     if kind in {"ImplicitCastExpr", "ExprWithCleanups", "MaterializeTemporaryExpr",
-                "CXXBindTemporaryExpr", "ParenExpr", "ConstantExpr"}:
+                "CXXBindTemporaryExpr", "ParenExpr", "ConstantExpr", "CXXFunctionalCastExpr",
+                "CStyleCastExpr"}:
         inner = node.get("inner", [])
         return expression(inner[0]) if inner else "undefined"
     if kind == "CXXThisExpr":
         return "this"
     if kind == "MemberExpr":
-        return "this." + as1_name(node.get("name", "member"))
+        receiver = (node.get("inner") or [{}])[0]
+        receiver = expression(receiver)
+        if receiver == "this":
+            return "this." + as1_name(node.get("name", "member"))
+        return receiver + "." + as1_name(node.get("name", "member"))
     if kind == "DeclRefExpr":
         return as1_name(node.get("referencedDecl", {}).get("name", "unknown"))
     if kind in {"IntegerLiteral", "FloatingLiteral", "CharacterLiteral", "CXXBoolLiteralExpr"}:
@@ -93,13 +98,24 @@ def expression(node):
         return expression((node.get("inner") or [{}])[0])
     if kind == "CXXConstructExpr":
         t = node.get("type", {}).get("qualType", "Object").replace("const ", "").strip()
-        return "new " + as1_name(t) + "(" + ", ".join(expression(x) for x in node.get("inner", [])) + ")"
+        args = node.get("inner", [])
+        # A same-type single-argument construction is a C++ copy. In the
+        # generated script, keep the returned object expression directly.
+        if len(args) == 1:
+            arg_type = args[0].get("type", {}).get("qualType", "")
+            normalized_arg_type = arg_type.replace("const ", "").replace("&", "").strip()
+            if normalized_arg_type == t:
+                return expression(args[0])
+        return "new " + as1_name(t) + "(" + ", ".join(expression(x) for x in args) + ")"
     if kind == "CXXMemberCallExpr":
         children = node.get("inner", [])
         callee = unwrap(children[0]) if children else {}
-        name = as1_name(callee.get("name", "call"))
+        if callee.get("kind") == "MemberExpr":
+            name = expression(callee)
+        else:
+            name = as1_name(callee.get("name", "call"))
         args = ", ".join(expression(x) for x in children[1:])
-        return "this." + name + "(" + args + ")"
+        return name + "(" + args + ")"
     if kind == "CXXOperatorCallExpr":
         children = node.get("inner", [])
         callee = children[0] if children else {}
@@ -116,7 +132,7 @@ def expression(node):
     if kind == "BinaryOperator":
         children = node.get("inner", [])
         if len(children) >= 2:
-            return expression(children[0]) + " " + node.get("opcode", "=") + " " + expression(children[1])
+            return "(" + expression(children[0]) + " " + node.get("opcode", "=") + " " + expression(children[1]) + ")"
     return "/* unsupported " + kind + " */"
 
 
@@ -140,7 +156,7 @@ def statement(node, indent="\t"):
         return statement(node["inner"][0], indent)
     return [indent + "// TODO translate " + kind]
 
-def generate_record(record, out_of_line_defs=()):
+def generate_record(record, out_of_line_defs=(), include_constructor=True):
     class_name = record["name"]
     access = "private" if record.get("tagUsed") == "class" else "public"
     ctor = None
@@ -162,7 +178,11 @@ def generate_record(record, out_of_line_defs=()):
             key = (name, signature)
             if key not in seen:
                 seen.add(key)
-                methods.append((name, params(child), signature))
+                definition = next((d for d in out_of_line_defs
+                                   if d.get("kind") == "CXXMethodDecl"
+                                   and d.get("mangledName") == child.get("mangledName")
+                                   and any(c.get("kind") == "CompoundStmt" for c in d.get("inner", []))), None)
+                methods.append((name, params(child), signature, definition))
 
     ctor_def = next((d for d in out_of_line_defs
                      if d.get("kind") == "CXXConstructorDecl" and d.get("name") == class_name
@@ -176,22 +196,27 @@ def generate_record(record, out_of_line_defs=()):
                 base_calls.append(as1_name(base) + ".call(this);")
             elif item.get("kind") == "CompoundStmt":
                 body = statement(item)
-    out = ["// Generated from Clang AST. Constructor statements are translated; other methods are stubs.",
-           f"function {class_name}({', '.join(p[0] for p in (ctor or []))}) {{"]
-    out.extend("\t" + call for call in base_calls)
-    out.extend(body)
-    out.extend(["}", ""])
+    out = ["// Generated from Clang AST. Translated method bodies are emitted where supported; remaining methods use stubs."]
+    if include_constructor:
+        out.append(f"function {class_name}({', '.join(p[0] for p in (ctor or []))}) {{")
+        out.extend("\t" + call for call in base_calls)
+        out.extend(body)
+        out.extend(["}", ""])
     used = {}
-    for name, args, signature in methods:
+    for name, args, signature, definition in methods:
         safe = as1_name(name)
         used[safe] = used.get(safe, 0) + 1
         if used[safe] > 1:
             safe += "_" + str(used[safe])
         return_type = signature.split("(", 1)[0].strip()
         out.append(f"{class_name}.prototype.{safe} = function({', '.join(p[0] for p in args)}) {{")
-        default = type_default(return_type)
-        if default:
-            out.append(f"\treturn {default};")
+        method_body = next((c for c in definition.get("inner", []) if c.get("kind") == "CompoundStmt"), None) if definition else None
+        if method_body is not None:
+            out.extend(statement(method_body))
+        else:
+            default = type_default(return_type)
+            if default:
+                out.append(f"\treturn {default};")
         out.extend(["};", ""])
     return "\n".join(out).rstrip() + "\n"
 
@@ -229,23 +254,82 @@ def project_classes(roots, requested_class=None):
     return list(unique.values())
 
 
+def owner_from_mangled_name(mangled):
+    """Return the immediate class name from a simple Itanium nested name."""
+    if not mangled or not mangled.startswith("_ZN"):
+        return None
+    pos = 3
+    # Skip cv/ref qualifiers that may follow the nested-name marker.
+    while pos < len(mangled) and mangled[pos] in "KVRrO":
+        pos += 1
+    components = []
+    while pos < len(mangled) and mangled[pos] != "E":
+        start = pos
+        while pos < len(mangled) and mangled[pos].isdigit():
+            pos += 1
+        if start == pos:
+            return None
+        size = int(mangled[start:pos])
+        component = mangled[pos:pos + size]
+        if len(component) != size:
+            return None
+        components.append(component)
+        pos += size
+    return components[-2] if len(components) >= 2 else None
+
+
+def stub_classes_from_methods(roots, requested_class=None):
+    """Build minimal class records around filtered method declarations."""
+    stubs = {}
+    for root in roots:
+        for node in walk_nodes(root):
+            if node.get("kind") != "CXXMethodDecl":
+                continue
+            owner = owner_from_mangled_name(node.get("mangledName", ""))
+            if not owner or (requested_class and owner != requested_class):
+                continue
+            # A synthetic public record lets generate_record reuse its regular
+            # method-signature and body translation path.
+            record = stubs.setdefault(owner, {
+                "kind": "CXXRecordDecl", "name": owner, "tagUsed": "class",
+                "completeDefinition": True,
+                "inner": [{"kind": "AccessSpecDecl", "access": "public"}],
+            })
+            record["inner"].append(node)
+    return list(stubs.values())
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("input", nargs="?", default="../a.json", help="Clang AST JSON stream (default: ../a.json; use - for stdin)")
-    parser.add_argument("-o", "--output", default="../bullet_as1/generated.as", help="output file (default: ../bullet_as1/generated.as; use - for stdout)")
+    parser.add_argument("input", nargs="?", default="../a.json", help="AST JSON (default: ../a.json; use - for stdin)")
+    parser.add_argument("-o", "--output", default="../bullet_as1/orig/a/a.as", help="output file (default: ../bullet_as1/orig/a/a.as; use - for stdout)")
     parser.add_argument("--class", dest="class_name", help="emit only this class")
+    parser.add_argument("--stub-class", type=int, choices=(0, 1, 2), default=1,
+                        help="no complete class: 0=error, 1=write nothing (default), 2=synthesize a stub class")
     args = parser.parse_args()
     try:
         records = list(read_json_stream(args.input))
         classes = project_classes(records, args.class_name)
+        include_constructor = True
         if not classes:
-            raise ValueError("no matching complete project class definitions found in the AST")
-        definitions = [r for root in records for r in walk_nodes(root)
-                       if r.get("kind") == "CXXConstructorDecl"]
-        result = "\n".join(generate_record(record, definitions) for record in classes)
-        if any("btVector3_mul(" in result or "btVector3_sub(" in result for _ in [0]):
-            result += "\nfunction btVector3_mul(a, b) {\n\treturn new btVector3(a.x() * b.x(), a.y() * b.y(), a.z() * b.z());\n}\n"
-            result += "function btVector3_sub(a, b) {\n\treturn new btVector3(a.x() - b.x(), a.y() - b.y(), a.z() - b.z());\n}\n"
+            if args.stub_class in (1, 2):
+                classes = stub_classes_from_methods(records, args.class_name)
+                if not classes:
+                    if args.stub_class == 1:
+                        result = ""
+                    else:
+                        raise ValueError("no complete class or method suitable for a stub class found in the AST")
+                elif args.stub_class == 1:
+                    include_constructor = False
+            else:
+                raise ValueError("no matching complete project class definitions found in the AST")
+        if classes:
+            definitions = [r for root in records for r in walk_nodes(root)
+                           if r.get("kind") in {"CXXConstructorDecl", "CXXMethodDecl"}]
+            result = "\n".join(generate_record(record, definitions, include_constructor) for record in classes)
+            if any("btVector3_mul(" in result or "btVector3_sub(" in result for _ in [0]):
+                result += "\nfunction btVector3_mul(a, b) {\n\treturn new btVector3(a.x() * b.x(), a.y() * b.y(), a.z() * b.z());\n}\n"
+                result += "function btVector3_sub(a, b) {\n\treturn new btVector3(a.x() - b.x(), a.y() - b.y(), a.z() - b.z());\n}\n"
         if args.output == "-":
             sys.stdout.write(result)
         else:
