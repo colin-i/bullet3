@@ -5,7 +5,7 @@ Clang's -ast-dump-filter output is a sequence of JSON objects, not a single
 JSON document. The generated AS1 class uses prototypes; method bodies are
 stubs because an AST declaration does not contain a JavaScript/AS1 binding.
 
-Usage: python3 ast_to_as1.py [AST.json] [-o ../bullet-as1-hx/orig/a/a.as]
+Usage: python3 ast_to_as.py [AST.json] [-o ../bullet-as-hx/orig/a/a.as]
 """
 import argparse
 import json
@@ -31,7 +31,7 @@ def read_json_stream(path):
         yield value
 
 
-def as1_name(name):
+def as_name(name):
     # C++ operators and destructor names are not callable AS1 identifiers.
     name = re.sub(r"[^A-Za-z0-9_$]", "_", name)
     if not name or name[0].isdigit():
@@ -58,7 +58,7 @@ def params(node):
     result = []
     for child in node.get("inner", []):
         if child.get("kind") == "ParmVarDecl":
-            result.append((as1_name(child.get("name") or f"arg{len(result)}"),
+            result.append((as_name(child.get("name") or f"arg{len(result)}"),
                            child.get("type", {}).get("qualType", "")))
     return result
 
@@ -88,10 +88,10 @@ def expression(node):
         receiver = (node.get("inner") or [{}])[0]
         receiver = expression(receiver)
         if receiver == "this":
-            return "this." + as1_name(node.get("name", "member"))
-        return receiver + "." + as1_name(node.get("name", "member"))
+            return "this." + as_name(node.get("name", "member"))
+        return receiver + "." + as_name(node.get("name", "member"))
     if kind == "DeclRefExpr":
-        return as1_name(node.get("referencedDecl", {}).get("name", "unknown"))
+        return as_name(node.get("referencedDecl", {}).get("name", "unknown"))
     if kind in {"IntegerLiteral", "FloatingLiteral", "CharacterLiteral", "CXXBoolLiteralExpr"}:
         return str(node.get("value", "0")).lower()
     if kind == "CXXDefaultArgExpr":
@@ -106,14 +106,14 @@ def expression(node):
             normalized_arg_type = arg_type.replace("const ", "").replace("&", "").strip()
             if normalized_arg_type == t:
                 return expression(args[0])
-        return "new " + as1_name(t) + "(" + ", ".join(expression(x) for x in args) + ")"
+        return "new " + as_name(t) + "(" + ", ".join(expression(x) for x in args) + ")"
     if kind == "CXXMemberCallExpr":
         children = node.get("inner", [])
         callee = unwrap(children[0]) if children else {}
         if callee.get("kind") == "MemberExpr":
             name = expression(callee)
         else:
-            name = as1_name(callee.get("name", "call"))
+            name = as_name(callee.get("name", "call"))
         args = ", ".join(expression(x) for x in children[1:])
         return name + "(" + args + ")"
     if kind == "CXXOperatorCallExpr":
@@ -148,7 +148,7 @@ def statement(node, indent="\t"):
             if decl.get("kind") == "VarDecl":
                 init = decl.get("inner", [])
                 rhs = expression(init[0]) if init else "undefined"
-                lines.append(indent + "var " + as1_name(decl.get("name", "value")) + " = " + rhs + ";")
+                lines.append(indent + "var " + as_name(decl.get("name", "value")) + " = " + rhs + ";")
         return lines
     if kind == "CXXMemberCallExpr":
         return [indent + expression(node) + ";"]
@@ -193,7 +193,7 @@ def generate_record(record, out_of_line_defs=(), include_constructor=True):
         for item in ctor_def.get("inner", []):
             if item.get("kind") == "CXXCtorInitializer" and item.get("baseInit"):
                 base = item["baseInit"].get("qualType", "")
-                base_calls.append(as1_name(base) + ".call(this);")
+                base_calls.append(as_name(base) + ".call(this);")
             elif item.get("kind") == "CompoundStmt":
                 body = statement(item)
     out = ["// Generated from Clang AST. Translated method bodies are emitted where supported; remaining methods use stubs."]
@@ -204,7 +204,7 @@ def generate_record(record, out_of_line_defs=(), include_constructor=True):
         out.extend(["}", ""])
     used = {}
     for name, args, signature, definition in methods:
-        safe = as1_name(name)
+        safe = as_name(name)
         used[safe] = used.get(safe, 0) + 1
         if used[safe] > 1:
             safe += "_" + str(used[safe])
@@ -302,7 +302,7 @@ def stub_classes_from_methods(roots, requested_class=None):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("input", nargs="?", default="../a.json", help="AST JSON (default: ../a.json; use - for stdin)")
-    parser.add_argument("-o", "--output", default="../bullet-as1-hx/orig/a/a.as", help="output file (default: ../bullet-as1-hx/orig/a/a.as; use - for stdout)")
+    parser.add_argument("-o", "--output", default="../bullet-as-hx/orig/a/a.as", help="output file (default: ../bullet-as-hx/orig/a/a.as; use - for stdout)")
     parser.add_argument("--class", dest="class_name", help="emit only this class")
     parser.add_argument("--stub-class", type=int, choices=(0, 1, 2), default=1,
                         help="no complete class: 0=error, 1=write nothing (default), 2=synthesize a stub class")
