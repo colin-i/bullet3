@@ -5,7 +5,7 @@ Clang's -ast-dump-filter output is a sequence of JSON objects, not a single
 JSON document. The generated AS1 class uses prototypes; method bodies are
 stubs because an AST declaration does not contain a JavaScript/AS1 binding.
 
-Usage: python3 ast_to_as1.py [AST.json] [-o ../bullet_as1/orig/a/a.as]
+Usage: python3 ast_to_as1.py [AST.json] [-o ../bullet-as1-hx/orig/a/a.as]
 """
 import argparse
 import json
@@ -302,7 +302,7 @@ def stub_classes_from_methods(roots, requested_class=None):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("input", nargs="?", default="../a.json", help="AST JSON (default: ../a.json; use - for stdin)")
-    parser.add_argument("-o", "--output", default="../bullet_as1/orig/a/a.as", help="output file (default: ../bullet_as1/orig/a/a.as; use - for stdout)")
+    parser.add_argument("-o", "--output", default="../bullet-as1-hx/orig/a/a.as", help="output file (default: ../bullet-as1-hx/orig/a/a.as; use - for stdout)")
     parser.add_argument("--class", dest="class_name", help="emit only this class")
     parser.add_argument("--stub-class", type=int, choices=(0, 1, 2), default=1,
                         help="no complete class: 0=error, 1=write nothing (default), 2=synthesize a stub class")
