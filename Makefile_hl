@@ -18,7 +18,7 @@ CXX := x86_64-linux-gnu-g++
 endif
 
 BUILD := ../build-bullet3-x86_64
-TARGET := ../bullet.hdll
+TARGET := $(BUILD)/bullet.hdll
 
 BULLET_SRCS := $(shell find $(BULLET_SRC) -type f -name '*.cpp' \
 	! -path '$(BULLET_SRC)/Bullet3*/*' \
