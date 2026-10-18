@@ -1,0 +1,70 @@
+# Android arm64-v8a Bullet C++ build using Bullet's CMake configuration and the Android NDK.
+# Target: a stock 64-bit ARM Android, e.g. Waydroid (LineageOS image) on a Raspberry Pi.
+# This builds Bullet shared libraries (.so) for Android; it does not build HashLink bindings.
+#
+# Usage:
+#   make -f Makefile_an ANDROID_NDK=/path/to/android-ndk -j"$(nproc)"
+#   make -f Makefile_an clean
+#
+# ANDROID_NDK can also come from the environment (ANDROID_NDK_HOME / ANDROID_NDK_ROOT).
+#
+# Optional:
+#   ANDROID_PLATFORM=android-24   minimum API level (Lineage 18.1 = 30, Lineage 20 = 33)
+#   ANDROID_STL=c++_shared        use c++_static to avoid shipping libc++_shared.so
+
+ROOT := $(patsubst %/,%,$(abspath $(dir $(lastword $(MAKEFILE_LIST)))))
+ANDROID_ABI ?= arm64-v8a
+ANDROID_PLATFORM ?= android-24
+ANDROID_STL ?= c++_shared
+ANDROID_NDK ?= $(or $(ANDROID_NDK_HOME),$(ANDROID_NDK_ROOT))
+BUILD_DIR ?= $(ROOT)/../build-android-$(ANDROID_ABI)
+OUT_DIR ?= $(BUILD_DIR)/out
+JOBS ?= $(shell nproc)
+BUILD_TYPE ?= Release
+CMAKE ?= cmake
+ADB ?= adb
+# Waydroid usually shows up as a network adb device, see "push" below.
+ADB_DEVICE ?= 192.168.240.112:5555
+PUSH_DIR ?= /data/local/tmp
+
+.PHONY: all check-ndk collect push clean
+
+all: check-ndk
+	$(CMAKE) -S "$(ROOT)" -B "$(BUILD_DIR)" \
+		-DCMAKE_TOOLCHAIN_FILE="$(ANDROID_NDK)/build/cmake/android.toolchain.cmake" \
+		-DANDROID_ABI=$(ANDROID_ABI) \
+		-DANDROID_PLATFORM=$(ANDROID_PLATFORM) \
+		-DANDROID_STL=$(ANDROID_STL) \
+		-DCMAKE_BUILD_TYPE=$(BUILD_TYPE) \
+		-DBUILD_SHARED_LIBS=ON \
+		-DBUILD_BULLET3=OFF \
+		-DBUILD_BULLET2_DEMOS=OFF \
+		-DBUILD_EXTRAS=OFF \
+		-DBUILD_UNIT_TESTS=OFF \
+		-DBUILD_PYBULLET=OFF \
+		-DBUILD_EGL=OFF \
+		-DBUILD_OPENGL3_DEMOS=OFF \
+		-DBUILD_CPU_DEMOS=OFF \
+		-DINSTALL_LIBS=OFF
+	$(CMAKE) --build "$(BUILD_DIR)" --parallel "$(JOBS)"
+	$(MAKE) -f "$(lastword $(MAKEFILE_LIST))" collect
+
+check-ndk:
+	@test -f "$(ANDROID_NDK)/build/cmake/android.toolchain.cmake" || { \
+		echo "Android NDK not found. Set ANDROID_NDK=/path/to/android-ndk"; exit 1; }
+
+# Gather all produced .so files (plus libc++_shared.so when using the shared STL) in one folder.
+collect:
+	mkdir -p "$(OUT_DIR)"
+	find "$(BUILD_DIR)" -path "$(OUT_DIR)" -prune -o -name '*.so*' -type f -print -exec cp -P {} "$(OUT_DIR)/" \;
+ifeq ($(ANDROID_STL),c++_shared)
+	cp "$(ANDROID_NDK)"/toolchains/llvm/prebuilt/*/sysroot/usr/lib/aarch64-linux-android/libc++_shared.so "$(OUT_DIR)/"
+endif
+
+# Copy the libraries into the running Waydroid container (adb over network).
+push:
+	$(ADB) connect $(ADB_DEVICE)
+	$(ADB) -s $(ADB_DEVICE) push "$(OUT_DIR)/." "$(PUSH_DIR)/"
+
+clean:
+	rm -rf "$(BUILD_DIR)"
