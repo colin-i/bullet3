@@ -8,6 +8,10 @@
 #
 # ANDROID_NDK can also come from the environment (ANDROID_NDK_HOME / ANDROID_NDK_ROOT).
 #
+# The .so files from "out" are packaged into the APK through project.xml (jniLibs/arm64-v8a);
+# install the APK in Waydroid with: make -f Makefile_an push
+# (run it from the project folder, or pass APK=/path/to/file.apk)
+#
 # Optional:
 #   ANDROID_PLATFORM=android-24   minimum API level (Lineage 18.1 = 30, Lineage 20 = 33)
 #   ANDROID_STL=c++_shared        use c++_static to avoid shipping libc++_shared.so
@@ -22,12 +26,10 @@ OUT_DIR ?= $(BUILD_DIR)/out
 JOBS ?= $(shell nproc)
 BUILD_TYPE ?= Release
 CMAKE ?= cmake
-ADB ?= adb
-# Waydroid usually shows up as a network adb device, see "push" below.
-ADB_DEVICE ?= 192.168.240.112:5555
-PUSH_DIR ?= /data/local/tmp
+PKG ?= test.away3dbullet
+APK ?= ../Export/android/bin/app/build/outputs/apk/debug/Away3dBullet-debug.apk
 
-.PHONY: all check-ndk collect push clean
+.PHONY: all check-ndk collect push unpush clean
 
 all: check-ndk
 	$(CMAKE) -S "$(ROOT)" -B "$(BUILD_DIR)" \
@@ -56,15 +58,19 @@ check-ndk:
 # Gather all produced .so files (plus libc++_shared.so when using the shared STL) in one folder.
 collect:
 	mkdir -p "$(OUT_DIR)"
-	find "$(BUILD_DIR)" -path "$(OUT_DIR)" -prune -o -name '*.so*' -type f -print -exec cp -P {} "$(OUT_DIR)/" \;
+	find "$(BUILD_DIR)" -path "$(OUT_DIR)" -prune -o -name '*.so' -type f -print -exec cp {} "$(OUT_DIR)/" \;
 ifeq ($(ANDROID_STL),c++_shared)
 	cp "$(ANDROID_NDK)"/toolchains/llvm/prebuilt/*/sysroot/usr/lib/aarch64-linux-android/libc++_shared.so "$(OUT_DIR)/"
 endif
 
-# Copy the libraries into the running Waydroid container (adb over network).
+# Install an APK into Waydroid.
 push:
-	$(ADB) connect $(ADB_DEVICE)
-	$(ADB) -s $(ADB_DEVICE) push "$(OUT_DIR)/." "$(PUSH_DIR)/"
+	@test -f "$(APK)" || { echo "APK not found: $(APK) (pass APK=/path/to/file.apk)"; exit 1; }
+	waydroid app install "$(APK)"
+
+# Remove the app from Waydroid.
+unpush:
+	sudo waydroid shell pm uninstall "$(PKG)"
 
 clean:
 	rm -rf "$(BUILD_DIR)"

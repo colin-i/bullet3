@@ -7,11 +7,12 @@
 
 ROOT := $(patsubst %/,%,$(abspath $(dir $(lastword $(MAKEFILE_LIST)))))
 BUILD_DIR ?= $(ROOT)/../build-native-$(shell uname -m)
+OUT_DIR ?= $(BUILD_DIR)/out
 JOBS ?= $(shell nproc)
 BUILD_TYPE ?= Release
 CMAKE ?= cmake
 
-.PHONY: all clean
+.PHONY: all clean collect
 
 all:
 	$(CMAKE) -S "$(ROOT)" -B "$(BUILD_DIR)" \
@@ -25,6 +26,11 @@ all:
 		-DBUILD_EGL=OFF \
 		-DINSTALL_LIBS=OFF
 	$(CMAKE) --build "$(BUILD_DIR)" --parallel "$(JOBS)"
+	$(MAKE) -f "$(lastword $(MAKEFILE_LIST))" collect
+
+collect:
+	mkdir -p "$(OUT_DIR)"
+	find "$(BUILD_DIR)" -path "$(OUT_DIR)" -prune -o -name '*.so' -print -exec cp {} "$(OUT_DIR)/" \;
 
 clean:
 	rm -rf "$(BUILD_DIR)"
